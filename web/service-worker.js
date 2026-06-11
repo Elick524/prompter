@@ -1,4 +1,4 @@
-const cacheName = "teleprompter-v1";
+const cacheName = "teleprompter-v2";
 const appFiles = [
   "./",
   "./index.html",

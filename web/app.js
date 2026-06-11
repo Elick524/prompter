@@ -11,6 +11,7 @@ const defaults = {
   fontSize: 42,
   lineHeight: 1.55,
   speed: 35,
+  sensitivity: 3,
   mirror: false
 };
 
@@ -24,10 +25,15 @@ let paceFrame = null;
 let lastPaceTime = 0;
 let recognition = null;
 let shouldRestartRecognition = false;
+let speechSegments = [];
+let currentSpeechSegment = 0;
+let speechHistory = "";
+let currentSessionTranscript = "";
+let pendingMatch = { segmentIndex: -1, count: 0 };
 
 function saveState() {
-  const { script, fontSize, lineHeight, speed, mirror } = state;
-  localStorage.setItem("teleprompter-settings", JSON.stringify({ script, fontSize, lineHeight, speed, mirror }));
+  const { script, fontSize, lineHeight, speed, sensitivity, mirror } = state;
+  localStorage.setItem("teleprompter-settings", JSON.stringify({ script, fontSize, lineHeight, speed, sensitivity, mirror }));
 }
 
 function sections() {
@@ -48,6 +54,7 @@ function renderScript() {
     paragraph.addEventListener("click", () => moveTo(index));
     elements.script.append(paragraph);
   });
+  buildSpeechSegments();
 }
 
 function applySettings() {
@@ -57,19 +64,25 @@ function applySettings() {
   elements.fontSize.value = state.fontSize;
   elements.lineHeight.value = state.lineHeight;
   elements.speed.value = state.speed;
+  elements.sensitivity.value = state.sensitivity;
   elements.mirror.checked = state.mirror;
   elements.fontSizeOutput.textContent = `${state.fontSize}px`;
   elements.lineHeightOutput.textContent = Number(state.lineHeight).toFixed(2);
   elements.speedOutput.textContent = `${state.speed}`;
+  elements.sensitivityOutput.textContent = ["安定", "低め", "標準", "高め", "最高"][state.sensitivity - 1];
 }
 
 function setStatus(message) {
   elements.status.textContent = message;
 }
 
-function moveTo(index, smooth = true) {
+function moveTo(index, smooth = true, syncSpeechPosition = true) {
   if (index < 0 || index >= paragraphs.length) return;
   state.currentIndex = index;
+  if (syncSpeechPosition) {
+    currentSpeechSegment = Math.max(0, speechSegments.findIndex((segment) => segment.paragraphIndex === index));
+    pendingMatch = { segmentIndex: -1, count: 0 };
+  }
   document.querySelector(".paragraph.current")?.classList.remove("current");
   const target = document.querySelector(`.paragraph[data-index="${index}"]`);
   target?.classList.add("current");
@@ -99,7 +112,11 @@ function runPace(time) {
 }
 
 function normalize(text) {
-  return text.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  return text
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[。、，．,.！？!?「」『』（）()・ー〜～\s]/gu, "")
+    .replace(/[^\p{L}\p{N}]/gu, "");
 }
 
 function ngrams(text, size = 2) {
@@ -112,26 +129,89 @@ function ngrams(text, size = 2) {
 
 function similarity(spoken, candidate) {
   if (!spoken || !candidate) return 0;
-  if (candidate.includes(spoken) || spoken.includes(candidate)) return 1;
+  if (spoken.length >= 5 && (candidate.includes(spoken) || spoken.includes(candidate))) return 1;
   const spokenGrams = ngrams(spoken);
   const candidateGrams = ngrams(candidate);
   let overlap = 0;
   for (const gram of spokenGrams) if (candidateGrams.has(gram)) overlap += 1;
-  return overlap / Math.max(1, Math.min(spokenGrams.size, candidateGrams.size));
+  const containment = overlap / Math.max(1, Math.min(spokenGrams.size, candidateGrams.size));
+  const dice = (2 * overlap) / Math.max(1, spokenGrams.size + candidateGrams.size);
+  return containment * 0.7 + dice * 0.3;
 }
 
-function followSpeech(transcript) {
-  const spoken = normalize(transcript).slice(-60);
-  if (spoken.length < 3) return;
-  const start = Math.max(0, state.currentIndex - 2);
-  const end = Math.min(paragraphs.length - 1, state.currentIndex + 8);
-  let best = { index: state.currentIndex, score: 0 };
+function splitForSpeech(text) {
+  const sentences = text
+    .split(/(?<=[。！？!?])|[、，,]\s*/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return sentences.length ? sentences : [text];
+}
 
-  for (let index = start; index <= end; index += 1) {
-    const score = similarity(spoken, normalize(paragraphs[index]));
-    if (score > best.score) best = { index, score };
+function buildSpeechSegments() {
+  speechSegments = [];
+  paragraphs.forEach((paragraph, paragraphIndex) => {
+    splitForSpeech(paragraph).forEach((text) => {
+      const normalized = normalize(text);
+      if (normalized) speechSegments.push({ text, normalized, paragraphIndex });
+    });
+  });
+  const firstInParagraph = speechSegments.findIndex((segment) => segment.paragraphIndex === state.currentIndex);
+  currentSpeechSegment = Math.max(0, firstInParagraph);
+}
+
+function candidateText(index) {
+  const previous = speechSegments[index - 1]?.normalized || "";
+  const current = speechSegments[index]?.normalized || "";
+  const next = speechSegments[index + 1]?.normalized || "";
+  return [current, previous + current, current + next];
+}
+
+function transcriptVariants(text) {
+  const normalized = normalize(text);
+  const lengths = [18, 30, 48, 72, 110];
+  return [...new Set(lengths.map((length) => normalized.slice(-length)).filter((value) => value.length >= 4))];
+}
+
+function followSpeech(transcripts) {
+  if (!speechSegments.length) return;
+  const variants = transcripts.flatMap(transcriptVariants);
+  if (!variants.length) return;
+
+  const start = Math.max(0, currentSpeechSegment - 3);
+  const end = Math.min(speechSegments.length - 1, currentSpeechSegment + 12);
+  let best = { segmentIndex: currentSpeechSegment, score: 0 };
+
+  for (let segmentIndex = start; segmentIndex <= end; segmentIndex += 1) {
+    let score = 0;
+    for (const spoken of variants) {
+      for (const candidate of candidateText(segmentIndex)) {
+        score = Math.max(score, similarity(spoken, candidate));
+      }
+    }
+    const distance = segmentIndex - currentSpeechSegment;
+    if (distance >= 0 && distance <= 2) score += 0.06;
+    if (distance > 6) score -= Math.min(0.12, (distance - 6) * 0.02);
+    if (score > best.score) best = { segmentIndex, score };
   }
-  if (best.score >= 0.34) moveTo(best.index);
+
+  const thresholds = [0.56, 0.48, 0.40, 0.33, 0.27];
+  const threshold = thresholds[state.sensitivity - 1];
+  if (best.score < threshold) return;
+
+  if (pendingMatch.segmentIndex === best.segmentIndex) {
+    pendingMatch.count += 1;
+  } else {
+    pendingMatch = { segmentIndex: best.segmentIndex, count: 1 };
+  }
+
+  const distance = best.segmentIndex - currentSpeechSegment;
+  const confirmationsNeeded = distance > 4 ? 2 : 1;
+  if (pendingMatch.count < confirmationsNeeded) return;
+
+  currentSpeechSegment = best.segmentIndex;
+  const paragraphIndex = speechSegments[best.segmentIndex].paragraphIndex;
+  if (paragraphIndex !== state.currentIndex) moveTo(paragraphIndex, true, false);
+  setStatus(`追従中: ${paragraphIndex + 1}/${paragraphs.length}（一致 ${Math.min(100, Math.round(best.score * 100))}%）`);
 }
 
 function setupRecognition() {
@@ -141,14 +221,21 @@ function setupRecognition() {
   instance.lang = "ja-JP";
   instance.continuous = true;
   instance.interimResults = true;
-  instance.maxAlternatives = 1;
+  instance.maxAlternatives = 5;
   instance.onresult = (event) => {
-    let transcript = "";
-    for (let index = event.resultIndex; index < event.results.length; index += 1) {
-      transcript += event.results[index][0].transcript;
+    let sessionTranscript = "";
+    const alternatives = [];
+    for (let index = 0; index < event.results.length; index += 1) {
+      const result = event.results[index];
+      sessionTranscript += result[0].transcript;
+      for (let alternativeIndex = 0; alternativeIndex < result.length; alternativeIndex += 1) {
+        alternatives.push(`${speechHistory} ${result[alternativeIndex].transcript}`);
+      }
     }
-    setStatus(`認識中: ${transcript.slice(-24)}`);
-    followSpeech(transcript);
+    currentSessionTranscript = sessionTranscript;
+    const fullTranscript = `${speechHistory} ${sessionTranscript}`;
+    setStatus(`認識中: ${sessionTranscript.slice(-24)}`);
+    followSpeech([fullTranscript, ...alternatives]);
   };
   instance.onerror = (event) => {
     if (event.error !== "aborted" && event.error !== "no-speech") {
@@ -156,6 +243,8 @@ function setupRecognition() {
     }
   };
   instance.onend = () => {
+    speechHistory = normalize(`${speechHistory}${currentSessionTranscript}`).slice(-180);
+    currentSessionTranscript = "";
     if (shouldRestartRecognition) {
       setTimeout(() => {
         try { instance.start(); } catch {}
@@ -179,6 +268,9 @@ function toggleSpeech() {
   if (state.listening) {
     if (state.pacing) togglePace();
     setStatus("マイクの許可後、原稿を読み上げてください");
+    speechHistory = "";
+    currentSessionTranscript = "";
+    pendingMatch = { segmentIndex: -1, count: 0 };
     try { recognition.start(); } catch {}
   } else {
     recognition.stop();
@@ -221,7 +313,7 @@ elements.fullscreenButton.addEventListener("click", async () => {
   }
 });
 
-for (const key of ["fontSize", "lineHeight", "speed"]) {
+for (const key of ["fontSize", "lineHeight", "speed", "sensitivity"]) {
   elements[key].addEventListener("input", (event) => {
     state[key] = Number(event.target.value);
     applySettings();
