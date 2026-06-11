@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#06080b">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="プロンプター">
+    <title>テレプロンプター</title>
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+    <link rel="icon" href="./icons/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main id="prompter" class="prompter" aria-label="テレプロンプター原稿">
+      <div class="reading-guide" aria-hidden="true"></div>
+      <div id="script" class="script"></div>
+    </main>
+
+    <header class="top-bar">
+      <div>
+        <strong>テレプロンプター</strong>
+        <span id="status" class="status">準備完了</span>
+      </div>
+      <button id="unlockButton" class="unlock hidden" type="button">ロック解除</button>
+    </header>
+
+    <nav id="controls" class="controls" aria-label="操作">
+      <button id="speechButton" type="button">
+        <span class="icon">●</span>
+        <span>音声追従</span>
+      </button>
+      <button id="paceButton" type="button">
+        <span class="icon">▶</span>
+        <span>一定速度</span>
+      </button>
+      <button id="editButton" type="button">
+        <span class="icon">✎</span>
+        <span>原稿</span>
+      </button>
+      <button id="settingsButton" type="button">
+        <span class="icon">Aa</span>
+        <span>設定</span>
+      </button>
+      <button id="lockButton" type="button">
+        <span class="icon">▣</span>
+        <span>ロック</span>
+      </button>
+    </nav>
+
+    <dialog id="editDialog">
+      <form method="dialog" class="dialog-content">
+        <div class="dialog-header">
+          <h2>原稿を編集</h2>
+          <button value="cancel" type="submit">閉じる</button>
+        </div>
+        <p class="hint">一文から数文ごとに改行すると、音声追従が正確になります。</p>
+        <textarea id="scriptEditor" spellcheck="true"></textarea>
+        <button id="saveScriptButton" class="primary" value="default" type="button">原稿を保存</button>
+      </form>
+    </dialog>
+
+    <dialog id="settingsDialog">
+      <form method="dialog" class="dialog-content settings">
+        <div class="dialog-header">
+          <h2>表示と動作</h2>
+          <button value="cancel" type="submit">完了</button>
+        </div>
+        <label>文字サイズ <output id="fontSizeOutput"></output>
+          <input id="fontSize" type="range" min="24" max="80" step="1">
+        </label>
+        <label>行間 <output id="lineHeightOutput"></output>
+          <input id="lineHeight" type="range" min="1.2" max="2.2" step="0.05">
+        </label>
+        <label>スクロール速度 <output id="speedOutput"></output>
+          <input id="speed" type="range" min="10" max="100" step="5">
+        </label>
+        <label class="toggle">
+          <input id="mirror" type="checkbox">
+          <span>文字を左右反転</span>
+        </label>
+        <button id="resetPositionButton" type="button">先頭に戻る</button>
+        <button id="fullscreenButton" type="button">全画面表示</button>
+      </form>
+    </dialog>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
